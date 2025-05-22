@@ -1,48 +1,64 @@
 import streamlit as st
 import asyncio
 import threading
-from websocket_client import WebSocketClient
+
 from orderbook import OrderBook
+from websocket_client import WebSocketClient
 from simulator import TradeSimulator
-from ui import show_ui
 
-# Session-wide state
-if "orderbook" not in st.session_state:
-    st.session_state.orderbook = OrderBook()
-    st.session_state.simulator = TradeSimulator(st.session_state.orderbook)
-    st.session_state.cost = 0
-    st.session_state.fee = 0
-    st.session_state.running = True
+# Streamlit Setup
+st.set_page_config(page_title="Crypto Trade Simulator", layout="wide")
+st.title("📊 Real-Time Crypto Trade Simulator")
 
-# Input UI
-asset, quantity, volatility, fee_tier = show_ui()
+# Layout
+left_col, right_col = st.columns(2)
 
-output_placeholder = st.empty()
+# Initialize OrderBook and WebSocket
+orderbook = OrderBook()
+ws_client = WebSocketClient(orderbook)
 
-# Callback for every market tick
-def handle_data(data):
-    st.session_state.orderbook.update(data)
-    cost, fee = st.session_state.simulator.simulate_market_buy(quantity)
-    st.session_state.cost = cost
-    st.session_state.fee = fee
+# WebSocket run in background thread
+def run_ws():
+    asyncio.run(ws_client.connect())
 
-# WebSocket setup
-def start_ws():
-    uri = "wss://ws.gomarket-cpp.goquant.io/ws/l2-orderbook/okx/BTC-USDT-SWAP"
-    client = WebSocketClient(uri)
-    client.register_callback(handle_data)
-    asyncio.run(client.connect())
+if "ws_started" not in st.session_state:
+    threading.Thread(target=run_ws, daemon=True).start()
+    st.session_state.ws_started = True
 
-# Start WebSocket only once
-if "ws_thread" not in st.session_state:
-    ws_thread = threading.Thread(target=start_ws, daemon=True)
-    ws_thread.start()
-    st.session_state.ws_thread = ws_thread
+# Left Panel: Input Parameters
+with left_col:
+    st.header("🛠 Input Parameters")
 
-# Live output section
-while st.session_state.running:
-    with output_placeholder.container():
-        st.subheader("💹 Trade Simulation Results")
-        st.metric("Net Cost", f"${st.session_state.cost:.2f}")
-        st.metric("Estimated Fee", f"${st.session_state.fee:.2f}")
-    asyncio.sleep(1)  # add small delay to avoid excessive redraw
+    exchange = st.selectbox("Exchange", ["OKX"], index=0)
+    asset = st.selectbox("Spot Asset", ["BTC-USDT-SWAP"])
+    order_type = st.selectbox("Order Type", ["Market"], index=0)
+    quantity_usd = st.number_input("Order Quantity (USD)", min_value=10.0, max_value=100000.0, value=100.0, step=10.0)
+    volatility = st.slider("Market Volatility (σ)", min_value=0.001, max_value=0.1, value=0.01, step=0.001)
+    fee_tier = st.selectbox("Fee Tier", ["Standard", "VIP1", "VIP2"])  # Logic for fee can be expanded
+
+    simulate_button = st.button("Simulate Trade")
+
+# Right Panel: Output
+with right_col:
+    st.header("📈 Output Metrics")
+    output_placeholder = st.empty()
+
+    if simulate_button:
+        simulator = TradeSimulator(orderbook)
+        net_cost, fee, slippage, impact = simulator.simulate_market_buy(
+            quantity_usd, volatility
+        )
+
+        # Store in session state
+        st.session_state.cost = net_cost
+        st.session_state.fee = fee
+        st.session_state.slippage = slippage
+        st.session_state.impact = impact
+
+        # Display Output
+        with output_placeholder.container():
+            st.subheader("💹 Trade Simulation Results")
+            st.metric("Net Cost", f"${net_cost:.2f}")
+            st.metric("Estimated Fee", f"${fee:.2f}")
+            st.metric("Estimated Slippage", f"${slippage:.2f}")
+            st.metric("Estimated Market Impact", f"${impact:.2f}")
